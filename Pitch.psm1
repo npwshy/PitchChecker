@@ -59,7 +59,7 @@ class Pitch {
             $hi = $this.Notes[$i]
             $dlo = $f - $lo.Freq
             $dloa = [Math]::Abs($dlo)
-            $dhi = $hi.Freq - $f
+            $dhi = $f - $hi.Freq
             $dhia = [Math]::Abs($dhi)
             if ($dloa -lt $dhia) {
                 $this.Name = $lo.Name
