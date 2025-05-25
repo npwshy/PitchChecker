@@ -8,8 +8,8 @@ WAVファイルの音データの音高（ピッチ）を表示します。
 
 * 入っていなければ PowerShell v7 以降をインストール
 * [MathNet](https://numerics.mathdotnet.com/)をダウンロードしてインストール
-* FFTHelper.psm1 の Add-Type のパスを修正
 * コードをクローン
+* FFTHelper.psm1 の Add-Type のパスを修正
 * ダウンロード先にログ補完先フォルダ logs を作成。ログ保管先はオプションで変更可能
 
 
