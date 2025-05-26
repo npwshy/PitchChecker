@@ -108,7 +108,6 @@ class Main {
     DetectPeak() {
         $nPeaks = 3
         $this.Peaks = @(, [Peak]@{Freq = 9999; Mag = 0})
-        $cutline = 0.3
         $preMag = -1
         $rising = $false
         $sIndex = $this.MinFreq / $this.FreqResolution - 1
@@ -117,7 +116,7 @@ class Main {
             $freq = $i * $this.FreqResolution
 
             $mag = $this.FFTData[$i].Magnitude
-            if ($mag -le $cutline) { continue }
+            if ($mag -le $this.PeakIgnoreThrethold) { continue }
             if ($mag -le $preMag) {
                 if ($rising) {
                     $this.Peaks += ,[Peak]@{Freq = $freq - $this.FreqResolution; Mag = $preMag }
@@ -178,7 +177,7 @@ class Main {
                 if ($wave.FmtChunk.FormatTag -eq 3) {
                     $this.BuffReader = [Float32]::New($wave.FileBuffer, $wave.FmtChunk.BlockAlign)
                     $this.SignalScaleFactor = 10000
-                    $this.PeakIgnoreThrethold = 0.1
+                    $this.PeakIgnoreThrethold = 0.02
                 }
                 break
             }
@@ -186,7 +185,7 @@ class Main {
                 if ($wave.FmtChunk.FormatTag -eq 1) {
                     $this.BuffReader = [PCM16]::New($wave.FileBuffer, $wave.FmtChunk.BlockAlign)
                     $this.SignalScaleFactor = 100
-                    $this.PeakIgnoreThrethold = 0.0001 #??
+                    $this.PeakIgnoreThrethold = 0.01 #??
                 }
             }
         }

@@ -1,7 +1,7 @@
 #
 # FFT helper functions
 #
-Add-Type -AssemblyName C:\LocalBin\MathNet.Numerics.5.0.0\lib\net6.0\MathNet.Numerics.dll
+Add-Type -AssemblyName "$env:MathNet\lib\net6.0\MathNet.Numerics.dll"
 
 #
 # Create Complex32
