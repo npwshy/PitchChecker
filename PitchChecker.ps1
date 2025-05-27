@@ -90,7 +90,7 @@ class Main {
             $pitch.Find($pk.Freq)
             $msg = $resMan.Add($pitch)
             if ($script:ShowAll -or $preNote -ne $pitch.Name) {
-                log "$($this.PocToTimeSpan($pos)) $($pitch.Name) $($pk.Freq) ($('{0:+#;-#;0}' -f $pitch.FreqDiff)) $msg"
+                log "$($this.PocToTimeSpan($pos)) $($pitch.Name) $($pk.Freq) ($('{0:+#;-#;0}' -f $pitch.FreqDiff)) Mag=$($pk.Mag) $msg"
             }
             $preNote = $pitch.Name
         }
@@ -135,11 +135,11 @@ class Main {
     #--- Export FFT data to CSV
     #
     ExportToCsv($file) {
-        $index = $this.DataStartIndexInFile + [int]($script:StartTime * $this.BytesPerSec)
-        $this.BuffReader.Seek($index)
         $this.SetData()
         FFT_Forward $this.FFTData
-        $this.FFTData |Export-Csv $file
+        $tmp = $this.FFTData |% { [PSCustomObject]$_ }
+        0 .. ($tmp.Count - 1) |%{ Add-Member -MemberType NoteProperty -Name No -Value $_ -InputObject $tmp[$_] }
+        $tmp |Export-Csv $file
         log "FFT Data exported: $file"
 
         $this.DetectPeak()
@@ -162,6 +162,10 @@ class Main {
         $this.LoadWaveFile($script:File)
         $this.BufferSize = $this.BuffReader.Bytes.Length
         $this.InitFFT()
+
+
+        $index = $this.DataStartIndexInFile + [int]($script:StartTime * $this.BytesPerSec)
+        $this.BuffReader.Seek($index)
     }
 
     LoadWaveFile([string]$filename) {
@@ -177,7 +181,7 @@ class Main {
                 if ($wave.FmtChunk.FormatTag -eq 3) {
                     $this.BuffReader = [Float32]::New($wave.FileBuffer, $wave.FmtChunk.BlockAlign)
                     $this.SignalScaleFactor = 10000
-                    $this.PeakIgnoreThrethold = 0.02
+                    $this.PeakIgnoreThrethold = $script:PeakThrethold
                 }
                 break
             }
@@ -185,7 +189,7 @@ class Main {
                 if ($wave.FmtChunk.FormatTag -eq 1) {
                     $this.BuffReader = [PCM16]::New($wave.FileBuffer, $wave.FmtChunk.BlockAlign)
                     $this.SignalScaleFactor = 100
-                    $this.PeakIgnoreThrethold = 0.01 #??
+                    $this.PeakIgnoreThrethold = $script:PeakThrethold
                 }
             }
         }
