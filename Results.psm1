@@ -9,6 +9,7 @@ class Result {
     $HiCount;
     $HiDiff;
 }
+
 class ResultManager {
     $Threthold;
     $Records;
@@ -57,13 +58,35 @@ class ResultManager {
     }
 
     ShowAll() {
+        if (!$this.TotalCount) {
+            log "!!! NO DATA !!!"
+            return
+        }
         $overall = @()
         $overall += , [PSCustomObject]@{ Description = "Total Notes"; Count = $this.TotalCount; Ratio = ""; }
         $overall += , [PSCustomObject]@{ Description = "Good"; Count = $this.TotalGood; Ratio = $this.TotalGood / $this.TotalCount * 100 }
         $overall += , [PSCustomObject]@{ Description = "Too Low"; Count = $this.TotalLow; Ratio = $this.TotalLow / $this.TotalCount * 100 }
         $overall += , [PSCustomObject]@{ Description = "Too Hi"; Count = $this.TotalHi; Ratio = $this.TotalHi / $this.TotalCount * 100 }
 
-        log ($overall | Format-Table | Out-String)
+        log ($overall | Format-Table -AutoSize | Out-String)
+
+        $notes = @()
+        foreach ($name in $this.Records.Keys) {
+            $r = $this.Records.$name
+            $ttl = $r.GoodCount + $r.HiCount + $r.LowCount
+            $notes += ,[PSCustomObject]@{
+                Name = $name;
+                'Good Count' = $r.GoodCount;
+                'Good%' = $r.GoodCount / $ttl *100;
+                'Too Hi' = $r.HiCount;
+                'Too Hi%' = $r.HiCount / $ttl * 100;
+                'Max Hi Diff' = $r.HiDiff;
+                'Too Low' = $r.LowCount;
+                'Too Low%' = $r.LowCount / $ttl * 100;
+                'Max Low Diff' = $r.LowDiff
+            }
+        }
+        log ($notes |Sort @{Expression={$_.Name -replace '[^\d]+(\d+).*',"`$1"}},@{Expression={$_.Name -replace '\d',''}}|Format-Table -AutoSize|Out-String)
     }
 
 }

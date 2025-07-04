@@ -16,6 +16,13 @@ function SetComplexArray($o, $prop, $n) {
 }
 
 #
+# Window
+#
+function GetWindow($n) {
+    [MathNet.Numerics.Window]::Hann($n)
+}
+
+#
 # Perform FFT
 #
 function FFT_Forward($cmp) { [MathNet.Numerics.IntegralTransforms.Fourier]::Forward($cmp) }

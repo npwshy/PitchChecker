@@ -8,16 +8,18 @@ using module .\FFTHelper.psm1
 using module .\Pitch.psm1
 using module .\Results.psm1
 
+
 param(
 [string] $File,
 [Alias('Start','Skip')]
-[float] $StartTime = 0,
-[float] $Interval = 0.2,
-[string] $ExportTo,
+[float] $StartTime = 1,
+[float] $Interval = 0.1,
+[float] $EndTime,
+[float] $SkipEnd = 1,
+[string] $OutFile,
 [float] $PitchThrethold = 0.01,
-[float] $PeakThrethold = 0.05,
-[switch] $ShowAll,
-[switch] $ShowPeak,
+[float] $NoiseRatio = 1.5,
+[float] $PeakNoiseRatio = 10,
 [string] $LogFilename = "logs\log.txt",
 [int] $LogGenerations = 9,
 [switch] $Help
@@ -29,9 +31,36 @@ Set-StrictMode -Version latest
 RunApp [Main] $LogFilename $LogGenerations
 return
 
+
+#
+# Peak
+#
 class Peak {
-    $Freq;
-    $Mag;
+    $Freq;          # Frequency
+    $Mag;           # Magnitude
+    $BaseFreq;      # Null or ref to [Peak] of base frequency
+    $TotalMag;      # sum of mags of overtones or 0 if [Peak] is overtone
+    $NoiseLevel;    # interval-wide information: noise level of the interval
+    $MaxMag;        # interval-wide information: max of mag in the interval. may be different from Mag
+}
+
+#
+# DunpFile structure
+#
+class FreqDumpFile {
+    [FreqDump[]] $FreqDump; # wave dump data for each interval
+    [string] $WaveFilename; # Filename
+}
+
+class FreqDump {
+    [float] $Time;
+    [int] $FreqMin;             # frequency of Magnitudes[0]
+    [int] $FreqMax;             # frequency of Maginutude[-1]
+    [float] $PeakFreq;          # identified peak in the interval
+    [float] $PeakMag;           # mag of the peak
+    [float] $MaxMag;            # max mag in the interval
+    [float] $NoiseLevel;
+    [float[]] $Magnitudes;      # array of mags: FreqMin - FreqMax
 }
 
 class Main {
@@ -56,15 +85,26 @@ class Main {
     [float]$SignalScaleFactor;
     $MinFreq;
     $MaxFreq;
+    [float] $AverageMag;
     [Peak[]]$Peaks;
-    [float]$PeakIgnoreThrethold;
+    [Double[]] $Window;
+
+    [float] $Time;
+    [float] $CurrentNoiseLevel;
+
+    [bool] $GenerateFreqDump = $false;
+    [FreqDumpFile] $FreqDumpFile;
+    [string] $OutFile_JSON;
+    [string] $OutFile_HTML;
 
     Run() {
         $this.Init()
-        if (!$script:ExportTo) {
-            $this.DecodeWave()
-        } else {
-            $this.ExportToCsv($script:ExportTo)
+        $this.DecodeWave()
+        if ($this.GenerateFreqDump) {
+            $this.FreqDumpFile |ConvertTo-Json -depth 5 -Compress |%{ $_ -replace '},',"},`n" } |Out-File $this.OutFile_JSON
+            log "Frequency data saved: $($this.OutFile_JSON)"
+            & pwsh .\NewViewer.ps1 -DataFile $this.OutFile_JSON -OutFile $this.OutFile_HTML
+            log "Viewer HTML saved: $($this.OutFile_HTML)"
         }
     }
 
@@ -72,79 +112,140 @@ class Main {
         $pitch = [Pitch]::New()
         $resMan = [ResultManager]::New($script:PitchThrethold)
 
-        $lastIndex = $this.BufferSize - $script:Interval * $this.BytesPerSec
-        $preNote = ""
+        $lastIndex = $script:EndTime ? $this.DataStartIndexInFile + [int]($script:EndTime * $this.BytesPerSec) : $this.BufferSize -  [int]($script:SkipEnd + $script:Interval) * $this.BytesPerSec
         while (($pos = $this.BuffReader.GetCurrentPosition()) -le $lastIndex) {
+            logv "DEBUG> Processing $($this.Time)"
             $this.SetData()
+
             FFT_Forward $this.FFTData
 
-            $this.DetectPeak()
-            if ($script:ShowPeak) {
-                log "DEBUG>> $pos $($this.Peaks |%{'[{0}hz,{1}]' -f $_.Freq,$_.Mag})"
+            $pk = $this.DetectPeak()
+            $note = "--- silent ---" # silent
+            if ($pk) {
+                $pitch.Find($pk.Freq)
+                $msg = $resMan.Add($pitch)
+                $nl = $pk.NoiseLevel
+                $note = "$($pitch.Name) $($pk.Freq) ($('{0:+#;-#;0}' -f $pitch.FreqDiff)) $msg"
+                log "$($this.PocToTimeSpan($pos)) $note"
+                logv "PMag=$($pk.Mag), MMag=$($pk.MaxMag), NL=$($nl), P/N=$(($pk.Mag/$nl).ToString('0.0')), M/N=$(($pk.MaxMag/$nl).TOString('0.0'))"
+            } else {
+                logv "No Peak identified"
             }
 
-            $pk = ($this.Peaks |Sort Freq)[0]
-            if ($pk.Freq -le $this.MinFreq) { continue }
-            if ($pk.Mag -lt $this.PeakIgnoreThrethold) { continue }
+            if ($this.GenerateFreqDump) {
+                $d = [FreqDump]@{
+                    Time = $this.Time
+                    FreqMin = 100
+                    FreqMax = 2000
+                    PeakFreq = $pk ? $pk.Freq : 0
+                    PeakMag = $pk ? $pk.Mag : 0
+                    MaxMag = $pk ? $pk.MaxMag : 0
+                    NoiseLevel = $this.CurrentNoiseLevel
+                }
+                $d.Magnitudes = $this.FFTData[$d.FreqMin .. $d.FreqMax].Magnitude
+                $this.FreqDumpFile.FreqDump += ,$d
 
-            $pitch.Find($pk.Freq)
-            $msg = $resMan.Add($pitch)
-            if ($script:ShowAll -or $preNote -ne $pitch.Name) {
-                log "$($this.PocToTimeSpan($pos)) $($pitch.Name) $($pk.Freq) ($('{0:+#;-#;0}' -f $pitch.FreqDiff)) Mag=$($pk.Mag) $msg"
             }
-            $preNote = $pitch.Name
+
+            $this.Time += $script:Interval
         }
 
         $resMan.ShowAll()
     }
 
     [string] PocToTimespan($pos) {
-        return '{0:h\:mm\:ss\.f}' -f [TimeSpan]::FromSeconds(($pos - $this.DataStartIndexInFile) / $this.BytesPerSec)
+        $f = '{0:h\:mm\:ss\.f}'
+        switch ($script:Interval) {
+            { $_ -ge 1 } { $f = '{0:h\:mm\:ss}'; break }
+            { $_ -ge 0.1 } { $f = '{0:h\:mm\:ss\.f}'; break }
+            { $_ -ge 0.01 } { $f = '{0:h\:mm\:ss\.ff}'; break }
+        }
+        return $f -f [TimeSpan]::FromSeconds(($pos - $this.DataStartIndexInFile) / $this.BytesPerSec)
     }
 
     #
     # detect peaks
     #
-    DetectPeak() {
-        $nPeaks = 3
-        $this.Peaks = @(, [Peak]@{Freq = 9999; Mag = 0})
+    [Peak] DetectPeak() {
+        $this.Peaks = @()
         $preMag = -1
         $rising = $false
         $sIndex = $this.MinFreq / $this.FreqResolution - 1
         $eIndex = $this.MaxFreq / $this.FreqResolution + 1
+        $ignoreThrethold = ($this.CurrentNoiseLevel = $this.GetNoiseLevel()) * $script:NoiseRatio
+        logv "IgnoreThrethold set: $ignoreThrethold"
+        $magMax = 0
         foreach ($i in $sIndex .. $eIndex) {
             $freq = $i * $this.FreqResolution
 
             $mag = $this.FFTData[$i].Magnitude
-            if ($mag -le $this.PeakIgnoreThrethold) { continue }
-            if ($mag -le $preMag) {
-                if ($rising) {
-                    $this.Peaks += ,[Peak]@{Freq = $freq - $this.FreqResolution; Mag = $preMag }
+            if ($mag -gt $ignoreThrethold) {
+                if ($mag -le $preMag) {
+                    if ($rising) {
+                        $this.Peaks += ,[Peak]@{Freq = $freq - $this.FreqResolution; Mag = $preMag }
+                        logv "Peak identified $($this.Peaks[-1].Freq),$premag"
+                        if ($premag -gt $magMax) {
+                            $magMax = $premag
+                        }
+                    }
+                    $rising = $false
                 }
-                $rising = $false
-            }
-            else {
-                $rising = $true
+                else {
+                    $rising = $true
+                }
             }
             $preMag = $mag
         }
-        $this.Peaks = $this.Peaks | Sort Mag | Select -last $nPeaks
+        logv "DetectPeak: magmax = $magMax (CNL=$($this.CurrentNoiseLevel)) $($this.Peaks.Freq)"
+        if ($magMax -lt $this.CurrentNoiseLevel * $script:PeakNoiseRatio) {
+            return $null
+        }
+        return $this.SelectPeak()
     }
 
-    #
-    #--- Export FFT data to CSV
-    #
-    ExportToCsv($file) {
-        $this.SetData()
-        FFT_Forward $this.FFTData
-        $tmp = $this.FFTData |% { [PSCustomObject]$_ }
-        0 .. ($tmp.Count - 1) |%{ Add-Member -MemberType NoteProperty -Name No -Value $_ -InputObject $tmp[$_] }
-        $tmp |Export-Csv $file
-        log "FFT Data exported: $file"
+    [Peak] SelectPeak() {
+        if (!$this.Peaks) {
+            logv "SelectPeak: no peak"
+            return $null;
+        }
 
-        $this.DetectPeak()
-        log "Peaks detected"
-        $this.Peaks |%{ log "Peak $($_.Freq) Hz, $($_.Mag)" }
+        logv "SelectPeak: Peaks#=$($this.Peaks.Count) $($this.Peaks.Freq)"
+
+        $p = [Peak]@{Freq=0}
+
+        $this.Peaks = $this.Peaks |Sort Mag -Descending
+        $OVtest = $this.Peaks |Sort Freq
+        $allowance = 5
+        foreach ($e in $this.Peaks) {
+            if ($e.BaseFreq) { continue }
+            foreach ($ov in $OVtest) {
+                if ($ov.Freq -ge $e.Freq) { break }
+                $ratio = $e.Freq / $ov.Freq
+                $fract = ($ratio - [Math]::Floor($ratio)) * 100
+                if ($fract -le $allowance -or $fract -ge (100 - $allowance)) {
+                    logv "IsOveftone: F=$($e.Freq) OT=$($ov.Freq) fract=$fract"
+                    $e.BaseFreq = $ov
+                    $ov.TotalMag += $e.Mag + $e.TotalMag
+                    break
+                }
+            }
+        }
+        logv "SelectPeak ---"
+        $this.Peaks |%{ logv "Peak: f=$($_.Freq) m=$($_.Mag) tm=$($_.TotalMag)" }
+        logv "--- SelectPeak"
+        $p = $this.Peaks |? { $_.TotalMag -gt 0 } |Sort TotalMag |Select -Last 1
+        if (!$p) {
+            $p = $this.Peaks[0]
+        }
+        $p.MaxMag = $this.Peaks[0].Mag
+        $p.NoiseLevel = $this.CurrentNoiseLevel
+        return $p
+    }
+
+    [double] GetNoiseLevel() {
+        $m = $this.FFTData[200..2000].Magnitude | Measure-Object -Average -Maximum
+        logv "GetNoiseLevel: $($m.Average) $($m.Maximum)"
+        return $m.Average
     }
 
     #
@@ -152,13 +253,14 @@ class Main {
     #
     SetData() {
         $this.FFTData = $this.FFTDataBlank.Clone()
-        $this.BuffReader.CopyData($this.FFTData, $this.FFTDataStartIndex, $this.WaveDataCount)
+        $this.BuffReader.CopyData($this.FFTData, $this.FFTDataStartIndex, $this.WaveDataCount, $this.Window)
     }
 
     Init() {
         if (!$script:File) {
             throw "-File が指定されていません"
         }
+
         $this.LoadWaveFile($script:File)
         $this.BufferSize = $this.BuffReader.Bytes.Length
         $this.InitFFT()
@@ -166,6 +268,18 @@ class Main {
 
         $index = $this.DataStartIndexInFile + [int]($script:StartTime * $this.BytesPerSec)
         $this.BuffReader.Seek($index)
+        $this.Time = $script:StartTime
+
+        if ($script:OutFile) {
+            $this.GenerateFreqDump = $true
+            $this.FreqDumpFile = [FreqDumpFile]@{
+                FreqDump = @()
+                WAVeFilename = $script:File
+            }
+            $ext = [IO.Path]::GetExtension($script:OutFile)
+            $this.OutFile_HTML = $script:OutFile -replace "$ext$",'.html'
+            $this.OutFile_JSON = $script:OutFile -replace "$ext$", '.json'
+        }
     }
 
     LoadWaveFile([string]$filename) {
@@ -181,7 +295,6 @@ class Main {
                 if ($wave.FmtChunk.FormatTag -eq 3) {
                     $this.BuffReader = [Float32]::New($wave.FileBuffer, $wave.FmtChunk.BlockAlign)
                     $this.SignalScaleFactor = 10000
-                    $this.PeakIgnoreThrethold = $script:PeakThrethold
                 }
                 break
             }
@@ -189,7 +302,6 @@ class Main {
                 if ($wave.FmtChunk.FormatTag -eq 1) {
                     $this.BuffReader = [PCM16]::New($wave.FileBuffer, $wave.FmtChunk.BlockAlign)
                     $this.SignalScaleFactor = 100
-                    $this.PeakIgnoreThrethold = $script:PeakThrethold
                 }
             }
         }
@@ -206,6 +318,7 @@ class Main {
         $this.MinFreq = 170
         $this.MaxFreq = 2000
         SetComplexArray $this 'FFTDataBlank' $this.SampleCount
+        $this.Window = GetWindow $this.WaveDataCount
     }
 }
 

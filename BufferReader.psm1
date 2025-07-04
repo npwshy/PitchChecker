@@ -26,11 +26,11 @@ class PCM16 : BufferReader {
         return $v
     }
 
-    CopyData($buff, $bIndex, $count) {
-        1 .. $count | % {
+    CopyData($buff, $bIndex, $count, [double[]]$window) {
+        0 .. ($count - 1)| % {
             $v = [BitConverter]::ToInt16($this.Bytes, $this.Index)
+            $buff[$bIndex++] = NewComplex ($v * $window[$_])
             $this.Index += $this.BlockSize
-            $buff[$bIndex++] = NewComplex $v
         }
     }
 
@@ -47,11 +47,11 @@ class Float32 : BufferReader {
         return $v
     }
 
-    CopyData($buff, $bIndex, $count) {
-        1 .. $count |%{
+    CopyData($buff, $bIndex, $count, [double[]]$window) {
+        0 .. ($count - 1) |%{
             $v = [BitConverter]::ToSingle($this.Bytes, $this.Index)
+            $buff[$bIndex++] = NewComplex ($v * $window[$_])
             $this.Index += $this.BlockSize
-            $buff[$bIndex++] = NewComplex $v
         }
     }
 }
